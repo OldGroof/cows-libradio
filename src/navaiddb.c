@@ -33,7 +33,7 @@
 #include <acfutils/safe_alloc.h>
 #include <acfutils/thread.h>
 
-#include "libradio/navaiddb.h"
+#include "navaiddb.h"
 
 #define	EARTH_NAV_MIN_VERSION	1100
 #define	EARTH_NAV_MAX_VERSION	1100
