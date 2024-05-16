@@ -1017,7 +1017,7 @@ void area(long ModVar, double deltaH, double tht_m, double rht_m,
   // NOTE: strmode is not used at this time.
   struct state state;
   prop_type prop;
-  propv_type propv;
+  propv_type propv = {};
   propa_type propa;
   double zt, zl, zc, xlb;
   double fs;

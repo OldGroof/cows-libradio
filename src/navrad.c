@@ -35,7 +35,7 @@
 #include <acfutils/time.h>
 
 #include "distort.h"
-#include "libradio/navrad.h"
+#include "navrad.h"
 #include "itm_c.h"
 
 #ifndef	USE_XPLANE_RADIO_DRS
@@ -61,8 +61,8 @@
 #define	HDEF_VOR_DEG_PER_DOT	5.0	/* degrees per dot */
 #define	HDEF_LOC_DDM_PER_DOT	0.0775	/* degrees per dot */
 #define	VDEF_GS_DEG_PER_DOT	3.5714	/* degrees per dot */
-#define	HSENS_VOR		12.0	/* dot deflection per deg correction */
-#define	HSENS_LOC		12.0	/* dot deflection per deg correction */
+#define	HSENS_VOR		20.0	/* dot deflection per deg correction */
+#define	HSENS_LOC		20.0	/* dot deflection per deg correction */
 #define	HDEF_FEEDBACK		15	/* dots per second */
 #define	MAX_INTCPT_ANGLE	30	/* degrees */
 #define	HDEF_RATE_UPD_RATE(signal_db)	signal_db_upd_rate(0.2, (signal_db))
@@ -91,7 +91,9 @@
 
 #define	NAVRAD_PARKED_BRG	90	/* bearing pointer parked pos */
 
-#define	MAX_DR_VALS		64
+/* COWS NXi: Limited datarefs to 2 */
+#define	MAX_DR_VALS		2
+/* COWS NXi */
 
 static bool_t inited = B_FALSE;
 
@@ -1026,7 +1028,8 @@ ap_drs_config(double d_t)
 		break;
 	default:
 #if	LIBRADIO_APCTL
-		dr_seti(&drs.ovrd_nav_heading, 0);
+		/* COWS NXi: Don't reset the nav heading override when not tracking NAV1 or NAV2, messes with my GPS! */
+		// dr_seti(&drs.ovrd_nav_heading, 0);
 		if (navrad.ap.ovrd_act) {
 			dr_seti(&drs.ovrd_ap, 0);
 			navrad.ap.ovrd_act = B_FALSE;
@@ -1035,12 +1038,6 @@ ap_drs_config(double d_t)
 		return;
 	}
 	is_loc = is_valid_loc_freq(radio->freq / 1000000.0);
-
-#if	LIBRADIO_APCTL
-	if ((ap_state & AP_HNAV_ARM) && !(ap_state & AP_HNAV))
-		dr_seti(&drs.ap_state, AP_HNAV_ARM | AP_HNAV);
-	dr_seti(&drs.ovrd_nav_heading, 1);
-#endif	/* LIBRADIO_APCTL */
 
 	hdef = dr_getf_prot(&radio->drs.vloc.hdef_pilot);
 	FILTER_IN(navrad.ap.hdef_rate, (hdef - navrad.ap.hdef_prev) / d_t, d_t,
@@ -1081,15 +1078,32 @@ ap_drs_config(double d_t)
 		corr_def *= mult;
 	}
 	corr = clamp(corr_def + navrad.ap.hdef_rate * HDEF_FEEDBACK,
-	    -MAX_INTCPT_ANGLE, MAX_INTCPT_ANGLE);
+	    -45, 45);
 	if (dr_geti(&drs.ap_bc) != 0)
 		corr = -corr;
-	intcpt = normalize_hdg(dr_getf_prot(&radio->drs.vloc.crs_degm_pilot) +
-	    corr + beta);
+	/* COWS NXi: If a localiser is tuned and received use the localiser's course instead of the selected pilot course */
+	if (is_loc && !isnan(radio->loc_fcrs)) {
+		// this is in true degrees -> convert to magnetic!
+		dr_t mag_var_dref;
+		fdr_find(&mag_var_dref, "sim/flightmodel/position/magnetic_variation");
+		float var = dr_getf(&mag_var_dref);
+		intcpt = normalize_hdg((radio->loc_fcrs + var) + corr + beta);
+	} else {
+		intcpt = normalize_hdg(dr_getf_prot(&radio->drs.vloc.crs_degm_pilot) + corr + beta);
+	}
+	/* COWS NXi */
 	FILTER_IN(navrad.ap.steer_tgt, intcpt, d_t,
 	    AP_STEER_UPD_RATE(radio->signal_db));
 
 	navrad.ap.hdef_prev = hdef;
+
+#if	LIBRADIO_APCTL
+	/* COWS NXi: Only engage if corr is within max intercept angle */
+	if ((ap_state & AP_HNAV_ARM) && !(ap_state & AP_HNAV) && (fabs(corr) < MAX_INTCPT_ANGLE))
+		dr_seti(&drs.ap_state, AP_HNAV_ARM | AP_HNAV);
+	dr_seti(&drs.ovrd_nav_heading, 1);
+	/* COWS NXi */
+#endif	/* LIBRADIO_APCTL */
 
 #if	LIBRADIO_APCTL
 	dr_setf(&drs.ap_steer_deg_mag, navrad.ap.steer_tgt);
@@ -2337,7 +2351,7 @@ radio_get_bearing(radio_t *radio)
 		vect3_t v = VECT3(0, 0, -1);
 		vect2_t v2;
 		double rel_brg, signal_drop;
-		enum { MAX_ERROR = 25 };
+		enum { MAX_ERROR = 35 };
 
 		v = vect3_rot(v, -vert_angle, 0);
 		v = vect3_rot(v, true_brg - dr_getf_prot(&drs.hdg), 1);
@@ -2449,8 +2463,13 @@ radio_comp_hdef_loc(radio_t *radio, double *ddm_p)
 	 * we need to wait for the signal level recalculation to take place
 	 * and compute a new signal level.
 	 */
+	// insert the LOC failure here?
+	dr_t loc_fail;
+	fdr_find(&loc_fail, "sim/operation/failures/rel_loc");
+
 	if (nav == NULL || nav->type != NAVAID_LOC ||
-	    ABS(navrad.cur_t - radio->freq_chg_t) < DME_CHG_DELAY) {
+	    ABS(navrad.cur_t - radio->freq_chg_t) < DME_CHG_DELAY
+		|| dr_geti(&loc_fail) == 6) {
 		radio->loc_fcrs = NAN;
 		if (ddm_p != NULL)
 			*ddm_p = NAN;
@@ -2636,7 +2655,11 @@ radio_vdef_update(radio_t *radio, double d_t)
 	    NOISE_FLOOR_AUDIO);
 	nav = (rnav != NULL ? rnav->navaid : NULL);
 	signal_db = (rnav != NULL ? rnav->signal_db : 0);
-	if (nav == NULL) {
+
+	dr_t gls_fail;
+	fdr_find(&gls_fail, "sim/operation/failures/rel_gls");
+
+	if (nav == NULL || dr_geti(&gls_fail) == 6) {
 		radio->vdef = NAN;
 		radio->gp_ddm = NAN;
 		radio->gs = NAN;
