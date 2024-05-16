@@ -21,8 +21,8 @@
 extern "C" {
 #endif
 
-bool snd_sys_init(void);
-void snd_sys_fini(void);
+	bool snd_sys_init(void);
+	void snd_sys_fini(void);
 
 #ifdef __cplusplus
 }
